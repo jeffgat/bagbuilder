@@ -132,10 +132,14 @@ export function calculateDca({
       totalShares: 0,
       latestPrice: 0,
       firstPrice: 0,
+      assetReturnPct: 0,
+      assetMoveDollars: 0,
       years: 0,
       annualizedReturnPct: null,
       buyHoldReturnPct: 0,
       buyHoldValue: 0,
+      fullMoveDollars: 0,
+      moveCapturePct: null,
       amountPerPurchase: 0,
       purchases: [],
       portfolio: [],
@@ -197,6 +201,8 @@ export function calculateDca({
 
   const latestPrice = sortedCandles.at(-1)?.close ?? 0
   const firstPrice = sortedCandles[0].close
+  const assetMoveDollars = latestPrice - firstPrice
+  const assetReturnPct = firstPrice > 0 ? (assetMoveDollars / firstPrice) * 100 : 0
   const currentValue = shares * latestPrice
   const totalInvested = purchases.reduce((total, purchase) => total + purchase.amount, 0)
   const netReturnDollars = currentValue - totalInvested
@@ -210,6 +216,8 @@ export function calculateDca({
   const buyHoldShares = firstPrice > 0 ? totalInvested / firstPrice : 0
   const buyHoldValue = buyHoldShares * latestPrice
   const buyHoldReturnPct = totalInvested > 0 ? ((buyHoldValue - totalInvested) / totalInvested) * 100 : 0
+  const fullMoveDollars = buyHoldValue - totalInvested
+  const moveCapturePct = fullMoveDollars !== 0 ? (netReturnDollars / fullMoveDollars) * 100 : null
   const portfolioDrawdown = maxDrawdown(portfolio.map((point) => point.value))
   const assetDrawdown = maxDrawdown(sortedCandles.map((candle) => candle.close))
 
@@ -226,10 +234,14 @@ export function calculateDca({
     totalShares: shares,
     latestPrice,
     firstPrice,
+    assetReturnPct,
+    assetMoveDollars,
     years,
     annualizedReturnPct: annualizedReturn === null ? null : annualizedReturn * 100,
     buyHoldReturnPct,
     buyHoldValue,
+    fullMoveDollars,
+    moveCapturePct,
     amountPerPurchase,
     purchases,
     portfolio,

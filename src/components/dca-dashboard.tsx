@@ -7,7 +7,6 @@ import {
   AlertTriangleIcon,
   ArrowDownIcon,
   BarChart3Icon,
-  CalculatorIcon,
   CalendarDaysIcon,
   CheckIcon,
   Clock3Icon,
@@ -15,9 +14,8 @@ import {
   DollarSignIcon,
   LineChartIcon,
   PercentIcon,
-  RotateCcwIcon,
   SearchIcon,
-  ShieldCheckIcon,
+  ShoppingBagIcon,
   SlidersHorizontalIcon,
   TrendingDownIcon,
   TrendingUpIcon,
@@ -27,7 +25,6 @@ import {
 import { ASSETS, FREQUENCIES, getAsset, getFrequency } from "@/lib/assets"
 import { calculateDca } from "@/lib/dca"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -57,8 +54,13 @@ const integerFormatter = new Intl.NumberFormat("en-US", {
 const ASSET_SEARCH_LIMIT = 8
 const DEFAULT_SALARY = 100_000
 const DEFAULT_INVESTMENT_PERCENT = 10
+const MIN_INVESTMENT_PERCENT = 1
+const MAX_INVESTMENT_PERCENT = 100
 const DEFAULT_FREQUENCY: Frequency = "monthly"
 const DEFAULT_MONTHS = 36
+const MIN_MONTHS = 12
+const MAX_MONTHS = 240
+const MONTH_STEP = 1.2
 const DEFAULT_SYMBOL: AssetSymbol = "SPY"
 
 type Asset = (typeof ASSETS)[number]
@@ -67,13 +69,83 @@ function formatCurrency(value: number) {
   return currencyFormatter.format(value)
 }
 
+function formatSignedCurrency(value: number) {
+  if (value > 0) {
+    return `+${formatCurrency(value)}`
+  }
+
+  if (value < 0) {
+    return `-${formatCurrency(Math.abs(value))}`
+  }
+
+  return formatCurrency(value)
+}
+
 function formatPercent(value: number, signed = false) {
   const prefix = signed && value > 0 ? "+" : ""
   return `${prefix}${percentFormatter.format(value)}%`
 }
 
+function roundToTenth(value: number) {
+  return Math.round(value * 10) / 10
+}
+
 function formatInteger(value: number) {
   return integerFormatter.format(Math.round(value))
+}
+
+function formatYears(months: number) {
+  return roundToTenth(months / 12).toFixed(1)
+}
+
+function formatYearLabel(months: number) {
+  const years = months / 12
+
+  return Number.isInteger(years) ? `${years}y` : `${years.toFixed(1)}y`
+}
+
+function scaledMetricValueClass(value: string) {
+  if (value.length >= 20) {
+    return "text-[0.78rem]"
+  }
+
+  if (value.length >= 17) {
+    return "text-[0.9rem]"
+  }
+
+  if (value.length >= 14) {
+    return "text-base"
+  }
+
+  return "text-xl"
+}
+
+function scaledFeatureValueClass(value: string) {
+  if (value.length >= 20) {
+    return "text-lg"
+  }
+
+  if (value.length >= 17) {
+    return "text-xl"
+  }
+
+  if (value.length >= 14) {
+    return "text-2xl"
+  }
+
+  return "text-3xl"
+}
+
+function formatDataRange(range: MarketDataResponse["range"] | undefined, requestedMonths: number) {
+  if (!range?.start || !range.end || range.actualMonths <= 0) {
+    return `${requestedMonths} months of daily data`
+  }
+
+  if (range.isLimited) {
+    return `using ${range.actualMonths} months from ${range.start} to ${range.end}`
+  }
+
+  return `${range.actualMonths} months from ${range.start} to ${range.end}`
 }
 
 function tileTone(value: number) {
@@ -101,8 +173,9 @@ function scoreAssetMatch(asset: Asset, normalizedQuery: string) {
   const symbol = normalizeAssetSearch(asset.symbol)
   const name = normalizeAssetSearch(asset.name)
   const label = normalizeAssetSearch(asset.label)
+  const aliases = asset.searchAliases?.map(normalizeAssetSearch) ?? []
 
-  if (ticker === normalizedQuery || symbol === normalizedQuery) {
+  if (ticker === normalizedQuery || symbol === normalizedQuery || aliases.includes(normalizedQuery)) {
     return 0
   }
 
@@ -114,24 +187,32 @@ function scoreAssetMatch(asset: Asset, normalizedQuery: string) {
     return 2
   }
 
-  if (name.startsWith(normalizedQuery)) {
+  if (aliases.some((alias) => alias.startsWith(normalizedQuery))) {
     return 3
   }
 
-  if (ticker.includes(normalizedQuery)) {
+  if (name.startsWith(normalizedQuery)) {
     return 4
   }
 
-  if (symbol.includes(normalizedQuery)) {
+  if (ticker.includes(normalizedQuery)) {
     return 5
   }
 
-  if (name.includes(normalizedQuery)) {
+  if (symbol.includes(normalizedQuery)) {
     return 6
   }
 
-  if (label.includes(normalizedQuery)) {
+  if (aliases.some((alias) => alias.includes(normalizedQuery))) {
+    return 6
+  }
+
+  if (name.includes(normalizedQuery)) {
     return 7
+  }
+
+  if (label.includes(normalizedQuery)) {
+    return 8
   }
 
   return Number.POSITIVE_INFINITY
@@ -286,6 +367,7 @@ function MetricTile({
   isLoading,
   tone = "text-foreground",
   iconTone = "bg-muted text-muted-foreground",
+  valueClassName,
   valueSkeletonClassName = "h-8 w-40",
   detailSkeletonClassName = "h-3 w-32",
 }: {
@@ -296,6 +378,7 @@ function MetricTile({
   isLoading: boolean
   tone?: string
   iconTone?: string
+  valueClassName?: string
   valueSkeletonClassName?: string
   detailSkeletonClassName?: string
 }) {
@@ -310,7 +393,7 @@ function MetricTile({
         </div>
         <div className="flex min-w-0 flex-col gap-2">
           <ValueSlot isLoading={isLoading} skeletonClassName={valueSkeletonClassName}>
-            <p className={`break-words font-mono text-xl font-semibold leading-none tracking-normal ${tone}`}>
+            <p className={cn("max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none tracking-normal", valueClassName ?? "text-xl", tone)}>
               {value}
             </p>
           </ValueSlot>
@@ -354,21 +437,19 @@ function ChartLegend({ assetSymbol, assetLabel }: { assetSymbol: string; assetLa
         </span>
         <span
           aria-hidden="true"
-          className="h-0.5 w-10 shrink-0 rounded-full bg-profit shadow-[0_0_10px_rgba(114,242,95,0.28)]"
+          className="h-0.5 w-10 shrink-0 rounded-full bg-chart-2 shadow-[0_0_10px_rgba(53,214,230,0.32)]"
         />
-        <span>price candles</span>
-        <span className="text-muted-foreground">(left axis)</span>
+        <span>price return</span>
       </div>
       <div className="flex items-center gap-2">
         <span
           aria-hidden="true"
           className="h-0.5 w-10 shrink-0 rounded-full bg-gold-400 shadow-[0_0_10px_rgba(248,193,89,0.35)]"
         />
-        <span className="font-medium text-foreground">portfolio value</span>
-        <span className="text-muted-foreground">(right axis)</span>
+        <span className="font-medium text-foreground">net return</span>
       </div>
       <div className="flex items-center gap-2">
-        <ArrowDownIcon aria-hidden="true" className="size-4 text-gold-0" />
+        <ArrowDownIcon aria-hidden="true" className="size-4 text-profit" />
         <span>dca buys</span>
       </div>
     </div>
@@ -394,7 +475,7 @@ function AssetSelectLabel({
         {asset.name}
       </span>
       <span className="text-right font-mono text-xs text-text-muted">
-        {asset.marketCapRank ? `#${asset.marketCapRank}` : ""}
+        {asset.kind}
       </span>
     </span>
   )
@@ -557,19 +638,44 @@ function RailHeading({
   )
 }
 
-function ScaleLabels({ labels }: { labels: string[] }) {
+function ScaleLabels({
+  labels,
+  max,
+  min,
+}: {
+  labels: Array<{ label: string; value: number }>
+  max: number
+  min: number
+}) {
   return (
-    <div className="grid grid-cols-5 gap-2 font-mono text-xs text-muted-foreground">
-      {labels.map((label) => (
-        <span key={label} className="text-center first:text-left last:text-right">
-          {label}
-        </span>
-      ))}
+    <div className="relative h-5 font-mono text-xs text-muted-foreground">
+      {labels.map(({ label, value }) => {
+        const position = ((value - min) / Math.max(1, max - min)) * 100
+        const translateClass = position <= 0 ? "translate-x-0" : position >= 100 ? "-translate-x-full" : "-translate-x-1/2"
+
+        return (
+          <span
+            key={label}
+            className={`absolute top-0 whitespace-nowrap ${translateClass}`}
+            style={{ left: `${Math.min(100, Math.max(0, position))}%` }}
+          >
+            {label}
+          </span>
+        )
+      })}
     </div>
   )
 }
 
-function SelectedAssetCard({ asset }: { asset: Asset }) {
+function SelectedAssetCard({
+  asset,
+  dataset,
+  schema,
+}: {
+  asset: Asset
+  dataset?: string
+  schema?: string
+}) {
   return (
     <div className="rounded-lg border border-profit/35 bg-profit/5 p-4 shadow-[inset_3px_0_0_rgba(114,242,95,0.88)]">
       <div className="flex items-start justify-between gap-3">
@@ -580,13 +686,13 @@ function SelectedAssetCard({ asset }: { asset: Asset }) {
           </p>
         </div>
         <Badge variant="outline" className="rounded-md border-profit/30 bg-profit/10 font-mono text-profit">
-          {asset.marketCapRank ? `#${asset.marketCapRank}` : "etf"}
+          {asset.kind}
         </Badge>
       </div>
       <div className="mt-4 flex flex-wrap gap-2 font-mono text-xs text-muted-foreground">
-        <span>{asset.dataset}</span>
+        <span>{dataset ?? asset.dataset}</span>
         <span aria-hidden="true">·</span>
-        <span>{asset.schema}</span>
+        <span>{schema ?? asset.schema}</span>
       </div>
     </div>
   )
@@ -626,14 +732,6 @@ export function DcaDashboard() {
   const [error, setError] = useState<string | null>(null)
 
   const startRecalculation = () => setIsRecalculating(true)
-  const resetInputs = () => {
-    startRecalculation()
-    setSalary(DEFAULT_SALARY)
-    setInvestmentPercent(DEFAULT_INVESTMENT_PERCENT)
-    setFrequency(DEFAULT_FREQUENCY)
-    setMonths(DEFAULT_MONTHS)
-    setSymbol(DEFAULT_SYMBOL)
-  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -653,7 +751,19 @@ export function DcaDashboard() {
           throw new Error("error" in payload ? payload.error : "unable to load market data.")
         }
 
-        setMarketData(payload as MarketDataResponse)
+        const nextMarketData = payload as MarketDataResponse
+        const availableMonths = nextMarketData.availability?.months
+
+        if (availableMonths) {
+          const maxSelectableMonths = roundToTenth(Math.max(MIN_MONTHS, Math.min(MAX_MONTHS, availableMonths)))
+
+          if (months > maxSelectableMonths) {
+            setIsRecalculating(true)
+            setMonths(maxSelectableMonths)
+          }
+        }
+
+        setMarketData(nextMarketData)
       } catch (caughtError) {
         if (controller.signal.aborted) {
           return
@@ -682,34 +792,65 @@ export function DcaDashboard() {
     return () => window.clearTimeout(timeout)
   }, [frequency, investmentPercent, isRecalculating, months, salary, symbol])
 
+  const selectedAsset = getAsset(symbol)
+  const selectedMarketData = marketData?.dataSymbol === selectedAsset.dataSymbol ? marketData : null
+
   const summary = useMemo(
     () =>
       calculateDca({
-        candles: marketData?.candles ?? [],
+        candles: selectedMarketData?.candles ?? [],
         salary,
         investmentPercent,
         frequency,
       }),
-    [frequency, investmentPercent, marketData?.candles, salary]
+    [frequency, investmentPercent, selectedMarketData?.candles, salary]
   )
 
-  const selectedAsset = getAsset(symbol)
   const selectedFrequency = getFrequency(frequency)
   const annualInvestment = salary * (investmentPercent / 100)
   const salaryInputValue = formatInteger(salary)
-  const sourceLabel = marketData?.source === "databento" ? "databento" : "demo data"
-  const chartAssetSymbol = marketData?.dataSymbol ?? selectedAsset.dataSymbol
-  const chartAssetLabel = marketData?.name ?? selectedAsset.name
+  const sourceLabel =
+    selectedMarketData?.source === "databento"
+      ? "databento"
+      : selectedMarketData?.source === "coinmetrics"
+      ? "coin metrics"
+      : selectedMarketData?.source === "coingecko"
+      ? "coingecko"
+      : "demo data"
+  const chartAssetSymbol = selectedMarketData?.dataSymbol ?? selectedAsset.dataSymbol
+  const chartAssetLabel = selectedMarketData?.name ?? selectedAsset.name
   const isValueLoading = isLoading || isRecalculating
-
+  const dataRange = selectedMarketData?.range
+  const availableMonths = selectedMarketData?.availability?.months ?? MAX_MONTHS
+  const limitedMonths = dataRange?.isLimited && dataRange.actualMonths > 0 ? dataRange.actualMonths : null
+  const maxSelectableMonths = roundToTenth(Math.max(MIN_MONTHS, Math.min(MAX_MONTHS, limitedMonths ?? availableMonths)))
+  const selectedMonths = roundToTenth(Math.min(months, maxSelectableMonths))
+  const effectiveMonths = dataRange?.actualMonths && dataRange.actualMonths > 0 ? dataRange.actualMonths : months
+  const timePeriodLabel = dataRange?.isLimited ? `${formatYears(effectiveMonths)} years available` : `${formatYears(months)} years`
+  const totalInvestedValueClass = scaledMetricValueClass(formatCurrency(summary.totalInvested))
+  const currentValueClass = scaledMetricValueClass(formatCurrency(summary.currentValue))
+  const netReturnValueClass = scaledMetricValueClass(formatPercent(summary.netReturnPct, true))
+  const maxDrawdownValueClass = scaledMetricValueClass(formatPercent(summary.maxDrawdownPct))
+  const averageBuyPriceValueClass = scaledMetricValueClass(formatCurrency(summary.averageBuyPrice))
+  const assetMoveValueClass = scaledFeatureValueClass(formatPercent(summary.assetReturnPct, true))
+  const returnCaptureValueClass = scaledFeatureValueClass(
+    summary.moveCapturePct === null ? "n/a" : formatPercent(summary.moveCapturePct)
+  )
+  const dollarsCapturedValueClass = scaledFeatureValueClass(formatSignedCurrency(summary.netReturnDollars))
+  const timeScaleLabels =
+    maxSelectableMonths <= MIN_MONTHS
+      ? [{ label: "1y", value: MIN_MONTHS }]
+      : [
+          { label: "1y", value: MIN_MONTHS },
+          { label: formatYearLabel(maxSelectableMonths), value: maxSelectableMonths },
+        ]
   return (
     <main className="min-h-svh p-3 sm:p-4 lg:p-5">
       <div className="console-frame relative mx-auto flex min-h-[calc(100svh-1.5rem)] max-w-[1540px] flex-col overflow-hidden rounded-lg border border-border">
         <header className="relative z-10 flex flex-col gap-4 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6">
           <div className="flex items-center gap-3">
-            <div className="relative flex size-10 items-center justify-center rounded-md border border-profit/70 text-profit shadow-[0_0_22px_rgba(114,242,95,0.16)]">
-              <span className="absolute -right-1 -top-1 size-3 border-r border-t border-profit" />
-              <CalculatorIcon aria-hidden="true" className="size-5" />
+            <div className="flex size-10 items-center justify-center text-profit">
+              <ShoppingBagIcon aria-hidden="true" className="size-8" />
             </div>
             <div>
               <h1 className="font-mono text-3xl font-semibold leading-none tracking-normal text-profit sm:text-4xl">
@@ -719,21 +860,6 @@ export function DcaDashboard() {
                 build the position before it builds you
               </p>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="rounded-md border-info/30 bg-info/10 font-mono text-info">
-              assets: {ASSETS.length}
-            </Badge>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-9 rounded-lg border-border bg-secondary/40 font-mono text-xs text-text-secondary hover:bg-secondary hover:text-foreground"
-              onClick={resetInputs}
-            >
-              <RotateCcwIcon data-icon="inline-start" />
-              reset
-            </Button>
           </div>
         </header>
 
@@ -777,8 +903,8 @@ export function DcaDashboard() {
                     <span className="font-mono text-sm text-profit">{investmentPercent}%</span>
                   </div>
                   <Slider
-                    min={1}
-                    max={60}
+                    min={MIN_INVESTMENT_PERCENT}
+                    max={MAX_INVESTMENT_PERCENT}
                     step={1}
                     value={[investmentPercent]}
                     onValueChange={(value) => {
@@ -787,7 +913,14 @@ export function DcaDashboard() {
                     }}
                     className="py-3 [&_[data-slot=slider-range]]:bg-profit [&_[data-slot=slider-thumb]]:size-5 [&_[data-slot=slider-thumb]]:border-profit [&_[data-slot=slider-thumb]]:bg-profit [&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-track]]:bg-input"
                   />
-                  <ScaleLabels labels={["1%", "10%", "20%", "30%", "60%"]} />
+                  <ScaleLabels
+                    min={MIN_INVESTMENT_PERCENT}
+                    max={MAX_INVESTMENT_PERCENT}
+                    labels={[
+                      { label: "1%", value: MIN_INVESTMENT_PERCENT },
+                      { label: "100%", value: MAX_INVESTMENT_PERCENT },
+                    ]}
+                  />
                   <FieldDescription className="font-mono text-xs">
                     annual investment: {formatCurrency(annualInvestment)}
                   </FieldDescription>
@@ -799,21 +932,21 @@ export function DcaDashboard() {
                       <CalendarDaysIcon className="size-4 text-profit" />
                       time period
                     </FieldTitle>
-                    <span className="font-mono text-sm text-profit">{(months / 12).toFixed(1)} years</span>
+                    <span className="font-mono text-sm text-profit">{timePeriodLabel}</span>
                   </div>
                   <Slider
-                    min={12}
-                    max={180}
-                    step={6}
-                    value={[months]}
+                    min={MIN_MONTHS}
+                    max={maxSelectableMonths}
+                    step={MONTH_STEP}
+                    value={[selectedMonths]}
                     onValueChange={(value) => {
                       startRecalculation()
                       setMonths(getSliderValue(value, DEFAULT_MONTHS))
                     }}
                     className="py-3 [&_[data-slot=slider-range]]:bg-profit [&_[data-slot=slider-thumb]]:size-5 [&_[data-slot=slider-thumb]]:border-profit [&_[data-slot=slider-thumb]]:bg-profit [&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-track]]:bg-input"
                   />
-                  <ScaleLabels labels={["1y", "3y", "5y", "10y", "15y"]} />
-                  <FieldDescription className="font-mono text-xs">{months} months of daily data</FieldDescription>
+                  <ScaleLabels min={MIN_MONTHS} max={maxSelectableMonths} labels={timeScaleLabels} />
+                  <FieldDescription className="font-mono text-xs">{formatDataRange(dataRange, months)}</FieldDescription>
                 </Field>
 
                 <Field>
@@ -850,10 +983,18 @@ export function DcaDashboard() {
                 </Field>
 
                 <Field>
-                  <FieldLabel htmlFor="asset-search" className="items-center font-mono text-sm text-text-secondary">
-                    <TrendingUpIcon className="size-4 text-profit" />
-                    asset search
-                  </FieldLabel>
+                  <div className="flex items-center justify-between gap-3">
+                    <FieldLabel htmlFor="asset-search" className="items-center font-mono text-sm text-text-secondary">
+                      <TrendingUpIcon className="size-4 text-profit" />
+                      asset search
+                    </FieldLabel>
+                    <Badge
+                      variant="outline"
+                      className="rounded-md border-border bg-secondary/40 font-mono text-text-secondary"
+                    >
+                      assets: {ASSETS.length}
+                    </Badge>
+                  </div>
                   <AssetSearchCombobox
                     key={selectedAsset.symbol}
                     id="asset-search"
@@ -861,7 +1002,7 @@ export function DcaDashboard() {
                     onSearchStart={startRecalculation}
                     onValueChange={setSymbol}
                   />
-                  <SelectedAssetCard asset={selectedAsset} />
+                  <SelectedAssetCard asset={selectedAsset} dataset={selectedMarketData?.dataset} schema={selectedMarketData?.schema} />
                   <FieldDescription className="font-mono text-xs">{selectedAsset.description}</FieldDescription>
                 </Field>
               </FieldGroup>
@@ -885,20 +1026,21 @@ export function DcaDashboard() {
                   isLoading={isValueLoading}
                   tone="text-gold-400"
                   iconTone="border-gold-400/25 bg-gold-500/15 text-gold-400"
+                  valueClassName={totalInvestedValueClass}
                 />
                 <MetricTile
                   label="current value"
                   value={<CountUpValue value={summary.currentValue} format={formatCurrency} isPaused={isValueLoading} />}
                   detail={
                     <>
-                      <CountUpValue value={summary.totalShares} format={(value) => value.toFixed(3)} isPaused={isValueLoading} />{" "}
-                      shares at <CountUpValue value={summary.latestPrice} format={formatCurrency} isPaused={isValueLoading} />
+                      <CountUpValue value={summary.latestPrice} format={formatCurrency} isPaused={isValueLoading} /> per share
                     </>
                   }
                   icon={BarChart3Icon}
                   isLoading={isValueLoading}
                   tone="text-profit"
                   iconTone="border-profit/25 bg-profit/15 text-profit"
+                  valueClassName={currentValueClass}
                 />
                 <MetricTile
                   label="net return"
@@ -914,6 +1056,7 @@ export function DcaDashboard() {
                   isLoading={isValueLoading}
                   tone={tileTone(summary.netReturnPct)}
                   iconTone={summary.netReturnPct < 0 ? "border-loss/25 bg-loss/15 text-loss" : "border-profit/25 bg-profit/15 text-profit"}
+                  valueClassName={netReturnValueClass}
                 />
                 <MetricTile
                   label="max drawdown"
@@ -929,6 +1072,7 @@ export function DcaDashboard() {
                   isLoading={isValueLoading}
                   tone="text-loss"
                   iconTone="border-loss/25 bg-loss/15 text-loss"
+                  valueClassName={maxDrawdownValueClass}
                 />
                 <MetricTile
                   label="average buy price"
@@ -942,6 +1086,7 @@ export function DcaDashboard() {
                   isLoading={isValueLoading}
                   tone="text-gold-400"
                   iconTone="border-info/25 bg-info/15 text-info"
+                  valueClassName={averageBuyPriceValueClass}
                 />
               </div>
             </section>
@@ -954,24 +1099,15 @@ export function DcaDashboard() {
                     <h2 className="font-mono text-sm font-semibold text-profit">performance overview</h2>
                     <span className="font-mono text-xs text-muted-foreground">{"// dca backtest"}</span>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    daily {selectedAsset.dataSymbol} candles with dca purchase markers and portfolio value.
-                  </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="gap-1.5 rounded-md border-info/30 bg-info/10 font-mono text-info">
-                    <span className={`status-pulse-dot ${marketData?.source === "databento" ? "text-profit" : "text-warning"}`} />
+                    <span className={`status-pulse-dot ${selectedMarketData?.source && selectedMarketData.source !== "demo" ? "text-profit" : "text-warning"}`} />
                     <DatabaseIcon aria-hidden="true" className="size-3.5" />
                     source: {sourceLabel}
                   </Badge>
                   <Badge variant="outline" className="rounded-md border-info/30 bg-info/10 font-mono text-info">
-                    ticker: {marketData?.dataSymbol ?? selectedAsset.dataSymbol}
-                  </Badge>
-                  <Badge variant="outline" className="rounded-md border-info/30 bg-info/10 font-mono text-info">
-                    dataset: {marketData?.dataset ?? selectedAsset.dataset}
-                  </Badge>
-                  <Badge variant="outline" className="rounded-md border-info/30 bg-info/10 font-mono text-info">
-                    schema: {marketData?.schema ?? selectedAsset.schema}
+                    ticker: {selectedMarketData?.dataSymbol ?? selectedAsset.dataSymbol}
                   </Badge>
                 </div>
               </div>
@@ -989,10 +1125,10 @@ export function DcaDashboard() {
                   </div>
                 ) : isLoading ? (
                   <LoadingChart />
-                ) : marketData?.candles.length ? (
+                ) : selectedMarketData?.candles.length ? (
                   <>
                     <ChartLegend assetSymbol={chartAssetSymbol} assetLabel={chartAssetLabel} />
-                    <PerformanceChart candles={marketData.candles} portfolio={summary.portfolio} purchases={summary.purchases} />
+                    <PerformanceChart candles={selectedMarketData.candles} portfolio={summary.portfolio} purchases={summary.purchases} />
                   </>
                 ) : (
                   <div className="flex h-[340px] items-center justify-center rounded-lg border border-dashed border-border text-muted-foreground md:h-[360px]">
@@ -1005,49 +1141,65 @@ export function DcaDashboard() {
             <section className="grid border-b border-border lg:grid-cols-[1.35fr_0.65fr]">
               <div className="border-b border-border p-4 lg:border-b-0 lg:border-r">
                 <div className="flex items-center gap-2">
-                  <ShieldCheckIcon aria-hidden="true" className="size-4 text-profit" />
-                  <h2 className="font-mono text-sm font-semibold text-profit">strategy details</h2>
-                  <span className="font-mono text-xs text-muted-foreground">{"// vs buy and hold"}</span>
+                  <TrendingUpIcon aria-hidden="true" className="size-4 text-profit" />
+                  <h2 className="font-mono text-sm font-semibold text-profit">move capture</h2>
+                  <span className="font-mono text-xs text-muted-foreground">{"// asset performance"}</span>
                 </div>
                 <div className="mt-4 grid gap-5 sm:grid-cols-3">
-                  <div className="flex flex-col gap-2 border-border sm:border-r sm:pr-5">
-                    <span className="font-mono text-xs text-muted-foreground">money-weighted annualized</span>
+                  <div className="flex min-w-0 flex-col gap-2 border-border sm:border-r sm:pr-5">
+                    <span className="font-mono text-xs text-muted-foreground">asset move</span>
                     <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-24">
-                      <span className={cn("font-mono text-3xl font-semibold", tileTone(summary.annualizedReturnPct ?? 0))}>
-                        {summary.annualizedReturnPct === null ? (
-                          "n/a"
-                        ) : (
-                          <CountUpValue
-                            value={summary.annualizedReturnPct}
-                            format={(value) => formatPercent(value, true)}
-                            isPaused={isValueLoading}
-                          />
-                        )}
-                      </span>
-                    </ValueSlot>
-                    <span className="font-mono text-xs text-muted-foreground">after all cash flows</span>
-                  </div>
-                  <div className="flex flex-col gap-2 border-border sm:border-r sm:pr-5">
-                    <span className="font-mono text-xs text-muted-foreground">buy-and-hold value</span>
-                    <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-32">
-                      <span className="font-mono text-3xl font-semibold text-gold-400">
-                        <CountUpValue value={summary.buyHoldValue} format={formatCurrency} isPaused={isValueLoading} />
-                      </span>
-                    </ValueSlot>
-                    <span className="font-mono text-xs text-muted-foreground">same total invested</span>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <span className="font-mono text-xs text-muted-foreground">buy-and-hold return</span>
-                    <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-24">
-                      <span className={cn("font-mono text-3xl font-semibold", tileTone(summary.buyHoldReturnPct))}>
+                      <span className={cn("block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none", assetMoveValueClass, tileTone(summary.assetReturnPct))}>
                         <CountUpValue
-                          value={summary.buyHoldReturnPct}
+                          value={summary.assetReturnPct}
                           format={(value) => formatPercent(value, true)}
                           isPaused={isValueLoading}
                         />
                       </span>
                     </ValueSlot>
-                    <span className="font-mono text-xs text-muted-foreground">over selected period</span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {formatSignedCurrency(summary.assetMoveDollars)} per share
+                    </span>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2 border-border sm:border-r sm:pr-5">
+                    <span className="font-mono text-xs text-muted-foreground">return capture</span>
+                    <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-32">
+                      <span
+                        className={cn(
+                          "block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none",
+                          returnCaptureValueClass,
+                          summary.moveCapturePct === null ? "text-muted-foreground" : tileTone(summary.moveCapturePct)
+                        )}
+                      >
+                        {summary.moveCapturePct === null ? (
+                          "n/a"
+                        ) : (
+                          <CountUpValue
+                            value={summary.moveCapturePct}
+                            format={formatPercent}
+                            isPaused={isValueLoading}
+                          />
+                        )}
+                      </span>
+                    </ValueSlot>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      from the entire {formatPercent(summary.assetReturnPct)} asset move
+                    </span>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">dollars captured</span>
+                    <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-24">
+                      <span className={cn("block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none", dollarsCapturedValueClass, tileTone(summary.netReturnDollars))}>
+                        <CountUpValue
+                          value={summary.netReturnDollars}
+                          format={formatSignedCurrency}
+                          isPaused={isValueLoading}
+                        />
+                      </span>
+                    </ValueSlot>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      of {formatSignedCurrency(summary.fullMoveDollars)} full-period move
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1059,7 +1211,7 @@ export function DcaDashboard() {
                   <span className="font-mono text-xs text-muted-foreground">{"// important"}</span>
                 </div>
                 <p className="mt-4 text-sm leading-7 text-text-secondary">
-                  {marketData?.note ??
+                  {selectedMarketData?.note ??
                     "spy is the default asset. returns are price-only until dividend and adjustment data are added."}
                 </p>
               </div>

@@ -5,6 +5,9 @@ import type { IChartApi, ISeriesMarkersPluginApi, LineData, SeriesMarker, Time }
 
 import type { Candle, PortfolioPoint, Purchase } from "@/types/market"
 
+const PRICE_COLOR = "#35d6e6"
+const DCA_BUY_COLOR = "#72f25f"
+
 type PerformanceChartProps = {
   candles: Candle[]
   portfolio: PortfolioPoint[]
@@ -15,12 +18,21 @@ function toChartTime(time: string) {
   return time as Time
 }
 
-function compactCurrency(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: value >= 1000 ? 0 : 2,
+function formatReturnPercent(value: number) {
+  const formatted = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 1,
+    minimumFractionDigits: Math.abs(value) < 10 ? 1 : 0,
   }).format(value)
+
+  return `${value > 0 ? "+" : ""}${formatted}%`
+}
+
+function toReturnPercent(current: number, basis: number) {
+  if (basis <= 0) {
+    return 0
+  }
+
+  return ((current - basis) / basis) * 100
 }
 
 export function PerformanceChart({ candles, portfolio, purchases }: PerformanceChartProps) {
@@ -61,8 +73,7 @@ export function PerformanceChart({ candles, portfolio, purchases }: PerformanceC
           horzLine: { color: "rgba(114,242,95,0.36)" },
         },
         rightPriceScale: {
-          borderColor: "rgba(248,193,89,0.55)",
-          visible: true,
+          visible: false,
         },
         leftPriceScale: {
           borderColor: "rgba(29,52,52,0.95)",
@@ -73,38 +84,39 @@ export function PerformanceChart({ candles, portfolio, purchases }: PerformanceC
           timeVisible: false,
         },
         localization: {
-          priceFormatter: (value: number) => compactCurrency(value),
+          priceFormatter: (value: number) => formatReturnPercent(value),
         },
       })
 
-      const assetPriceSeries = chart.addSeries(LineSeries, {
+      const assetReturnSeries = chart.addSeries(LineSeries, {
         priceScaleId: "left",
-        color: "#72f25f",
+        color: PRICE_COLOR,
         lineWidth: 2,
         priceLineVisible: true,
         lastValueVisible: true,
       })
 
       const portfolioSeries = chart.addSeries(LineSeries, {
-        priceScaleId: "right",
+        priceScaleId: "left",
         color: "#f8c159",
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: true,
       })
 
-      const assetPriceData: LineData<Time>[] = candles.map((candle) => ({
+      const firstClose = candles[0]?.close ?? 0
+      const assetReturnData: LineData<Time>[] = candles.map((candle) => ({
         time: toChartTime(candle.time),
-        value: candle.close,
+        value: toReturnPercent(candle.close, firstClose),
       }))
 
-      assetPriceSeries.setData(assetPriceData)
+      assetReturnSeries.setData(assetReturnData)
       portfolioSeries.setData(
         portfolio
-          .filter((point) => point.value > 0)
+          .filter((point) => point.invested > 0)
           .map((point) => ({
             time: toChartTime(point.time),
-            value: point.value,
+            value: toReturnPercent(point.value, point.invested),
           }))
       )
 
@@ -115,21 +127,18 @@ export function PerformanceChart({ candles, portfolio, purchases }: PerformanceC
           id: `${purchase.time}-${index}`,
           time: toChartTime(purchase.time),
           position: "atPriceTop",
-          price: purchase.price,
+          price: toReturnPercent(purchase.price, firstClose),
           shape: "arrowDown",
-          color: "#f8c159",
+          color: DCA_BUY_COLOR,
           size: 1.1,
         }))
 
-      markerApi = createSeriesMarkers(assetPriceSeries, markers, {
+      markerApi = createSeriesMarkers(assetReturnSeries, markers, {
         autoScale: true,
         zOrder: "top",
       })
 
       chart.priceScale("left").applyOptions({
-        scaleMargins: { top: 0.16, bottom: 0.18 },
-      })
-      chart.priceScale("right").applyOptions({
         scaleMargins: { top: 0.08, bottom: 0.22 },
       })
       chart.timeScale().fitContent()

@@ -197,19 +197,8 @@
     background-size: auto, 40px 40px, 40px 40px;
     box-shadow:
       0 24px 80px rgba(0, 0, 0, 0.46),
-      inset 0 1px 0 rgba(238, 247, 240, 0.05);
-  }
-
-  .console-frame::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    border-radius: inherit;
-    background:
-      linear-gradient(90deg, rgba(114, 242, 95, 0.82), transparent 34%) left top / 100% 1px no-repeat,
-      linear-gradient(315deg, transparent 0 14%, rgba(114, 242, 95, 0.76) 14.2%, rgba(114, 242, 95, 0.76) 14.9%, transparent 15.1%) right bottom / 16rem 5rem no-repeat;
-    opacity: 0.82;
+      inset 0 1px 0 rgba(114, 242, 95, 0.67),
+      inset 0 2px 0 rgba(238, 247, 240, 0.05);
   }
 
   .metric-card {

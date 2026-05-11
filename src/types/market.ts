@@ -2,7 +2,9 @@ export type AssetSymbol = string
 
 export type Frequency = "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly"
 
-export type DataSource = "databento" | "demo"
+export type DataSource = "coingecko" | "coinmetrics" | "databento" | "demo"
+export type DataAccess = "included" | "cost-capped" | "demo" | "free"
+export type PriceAdjustmentSource = "databento-reference" | "price-gap-detection" | "none"
 
 export type Candle = {
   time: string
@@ -11,6 +13,13 @@ export type Candle = {
   low: number
   close: number
   volume: number
+}
+
+export type PriceAdjustmentEvent = {
+  date: string
+  factor: number
+  source: Exclude<PriceAdjustmentSource, "none">
+  description: string
 }
 
 export type Purchase = {
@@ -35,6 +44,30 @@ export type MarketDataResponse = {
   schema: string
   source: DataSource
   note?: string
+  estimatedCostUsd?: number | null
+  costCapUsd?: number
+  billing?: {
+    access: DataAccess
+    plan: string
+    description: string
+  }
+  availability?: {
+    months: number
+    start: string | null
+    end: string | null
+  }
+  adjustment?: {
+    price: "raw" | "split-adjusted"
+    source: PriceAdjustmentSource
+    events: PriceAdjustmentEvent[]
+  }
+  range: {
+    requestedMonths: number
+    actualMonths: number
+    start: string | null
+    end: string | null
+    isLimited: boolean
+  }
   candles: Candle[]
 }
 
@@ -51,10 +84,14 @@ export type DcaSummary = {
   totalShares: number
   latestPrice: number
   firstPrice: number
+  assetReturnPct: number
+  assetMoveDollars: number
   years: number
   annualizedReturnPct: number | null
   buyHoldReturnPct: number
   buyHoldValue: number
+  fullMoveDollars: number
+  moveCapturePct: number | null
   amountPerPurchase: number
   purchases: Purchase[]
   portfolio: PortfolioPoint[]

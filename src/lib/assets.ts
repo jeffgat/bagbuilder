@@ -7,24 +7,150 @@ type Asset = {
   description: string
   dataSymbol: string
   dataset: string
+  datasetCandidates: string[]
   schema: string
+  kind: "stock" | "etf" | "crypto"
+  coinGeckoId?: string
+  coinMetricsId?: string
   marketCapRank?: number
+  searchAliases?: string[]
   note?: string
 }
 
 const EQUITY_DATASET = "EQUS.MINI"
+const NASDAQ_HISTORY_DATASET = "XNAS.ITCH"
+const NYSE_HISTORY_DATASET = "XNYS.PILLAR"
+const NYSE_ARCA_HISTORY_DATASET = "ARCX.PILLAR"
 const DAILY_SCHEMA = "ohlcv-1d"
+const COINGECKO_DATASET = "coingecko"
+const COINGECKO_SCHEMA = "market_chart/range"
+const COINMETRICS_DATASET = "coinmetrics-community"
+const COINMETRICS_SCHEMA = "PriceUSD-1d"
+const RECENT_AGGREGATED_DATASETS = ["EQUS.MINI", "EQUS.SUMMARY", "XNAS.BASIC"]
 
-function stockAsset(dataSymbol: string, name: string, marketCapRank: number): Asset {
+const NASDAQ_LISTED_SYMBOLS = new Set([
+  "AAPL",
+  "ADI",
+  "AMD",
+  "AMAT",
+  "AMGN",
+  "AMZN",
+  "APP",
+  "ARM",
+  "ASML",
+  "AVGO",
+  "AZN",
+  "COST",
+  "CSCO",
+  "COIN",
+  "CRWD",
+  "CRWV",
+  "GILD",
+  "GOOG",
+  "HOOD",
+  "IBIT",
+  "INTC",
+  "KLAC",
+  "LRCX",
+  "META",
+  "MRVL",
+  "MSFT",
+  "MU",
+  "NFLX",
+  "NVDA",
+  "PANW",
+  "PEP",
+  "PLTR",
+  "QQQ",
+  "QCOM",
+  "SNDK",
+  "STX",
+  "TMUS",
+  "TSLA",
+  "TXN",
+  "WDC",
+])
+
+const NYSE_ARCA_LISTED_SYMBOLS = new Set(["GLD", "IVV", "SPY", "VOO"])
+
+function uniqueDatasets(datasets: string[]) {
+  return Array.from(new Set(datasets))
+}
+
+function longHistoryDatasets(dataSymbol: string) {
+  const primaryDataset = NASDAQ_LISTED_SYMBOLS.has(dataSymbol)
+    ? NASDAQ_HISTORY_DATASET
+    : NYSE_ARCA_LISTED_SYMBOLS.has(dataSymbol)
+    ? NYSE_ARCA_HISTORY_DATASET
+    : NYSE_HISTORY_DATASET
+
+  return uniqueDatasets([
+    primaryDataset,
+    ...RECENT_AGGREGATED_DATASETS,
+  ])
+}
+
+function stockAsset(dataSymbol: string, name: string, marketCapRank: number, searchAliases?: string[]): Asset {
   return {
     symbol: dataSymbol,
     name,
     label: `${dataSymbol} - ${name}`,
-    description: `top 100 u.s.-listed equity by market cap, rank #${marketCapRank}.`,
+    description: "top 100 u.s.-listed stock by market cap.",
     dataSymbol,
     dataset: EQUITY_DATASET,
+    datasetCandidates: longHistoryDatasets(dataSymbol),
     schema: DAILY_SCHEMA,
+    kind: "stock",
     marketCapRank,
+    searchAliases,
+  }
+}
+
+function watchlistStockAsset(dataSymbol: string, name: string, searchAliases?: string[]): Asset {
+  return {
+    symbol: dataSymbol,
+    name,
+    label: `${dataSymbol} - ${name}`,
+    description: "u.s.-listed stock from the watchlist.",
+    dataSymbol,
+    dataset: EQUITY_DATASET,
+    datasetCandidates: longHistoryDatasets(dataSymbol),
+    schema: DAILY_SCHEMA,
+    kind: "stock",
+    searchAliases,
+  }
+}
+
+function cryptoAsset({
+  coinGeckoId,
+  coinMetricsId,
+  marketCapRank,
+  name,
+  symbol,
+  searchAliases,
+}: {
+  coinGeckoId: string
+  coinMetricsId?: string
+  marketCapRank: number
+  name: string
+  symbol: string
+  searchAliases: string[]
+}): Asset {
+  return {
+    symbol,
+    name,
+    label: `${symbol} - ${name}`,
+    description: `spot crypto price history from ${coinMetricsId ? "coin metrics" : "coingecko"}.`,
+    dataSymbol: symbol,
+    dataset: coinMetricsId ? COINMETRICS_DATASET : COINGECKO_DATASET,
+    datasetCandidates: [coinMetricsId ? COINMETRICS_DATASET : COINGECKO_DATASET],
+    schema: coinMetricsId ? COINMETRICS_SCHEMA : COINGECKO_SCHEMA,
+    kind: "crypto",
+    coinGeckoId,
+    coinMetricsId,
+    marketCapRank,
+    searchAliases,
+    note: `${name.toLowerCase()} spot price history is sourced from ${coinMetricsId ? "coin metrics community PriceUSD" : "coingecko"}. prices are usd market data and do not include exchange fees, taxes, spreads, staking yield, or custody costs.`,
   }
 }
 
@@ -35,8 +161,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "SPY - SPDR S&P 500 ETF",
     description: "starter s&p 500 proxy with deep history and tight etf liquidity.",
     dataSymbol: "SPY",
-    dataset: EQUITY_DATASET,
+    dataset: NYSE_ARCA_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("SPY"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
   },
   {
     symbol: "VOO",
@@ -44,8 +172,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "VOO - Vanguard S&P 500 ETF",
     description: "lower-fee etf alternative for later comparisons.",
     dataSymbol: "VOO",
-    dataset: EQUITY_DATASET,
+    dataset: NYSE_ARCA_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("VOO"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
   },
   {
     symbol: "IVV",
@@ -53,8 +183,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "IVV - iShares Core S&P 500 ETF",
     description: "another large s&p 500 etf proxy.",
     dataSymbol: "IVV",
-    dataset: EQUITY_DATASET,
+    dataset: NYSE_ARCA_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("IVV"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
   },
   {
     symbol: "NASDAQ",
@@ -62,8 +194,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "QQQ - Invesco QQQ ETF",
     description: "nasdaq-100 exposure through the liquid qqq etf proxy.",
     dataSymbol: "QQQ",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("QQQ"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
     note: "nasdaq exposure is represented by qqq, an exchange-traded nasdaq-100 proxy.",
   },
   {
@@ -72,8 +206,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "GLD - SPDR Gold Shares ETF",
     description: "gold price exposure through the gld etf proxy.",
     dataSymbol: "GLD",
-    dataset: EQUITY_DATASET,
+    dataset: NYSE_ARCA_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("GLD"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
     note: "gold exposure is represented by gld, an exchange-traded gold proxy.",
   },
   {
@@ -82,8 +218,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "IBIT - iShares Bitcoin Trust ETF",
     description: "bitcoin spot etf exposure through the ibit proxy.",
     dataSymbol: "IBIT",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("IBIT"),
     schema: DAILY_SCHEMA,
+    kind: "etf",
     note: "bitcoin exposure is represented by ibit, an exchange-traded spot bitcoin etf proxy with data from its 2024 launch onward.",
   },
   {
@@ -92,8 +230,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "NVDA - NVIDIA Corp.",
     description: "semiconductor and ai infrastructure bellwether.",
     dataSymbol: "NVDA",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("NVDA"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
   },
   {
     symbol: "TSLA",
@@ -101,17 +241,22 @@ const STARTER_ASSETS: Asset[] = [
     label: "TSLA - Tesla Inc.",
     description: "electric vehicle and energy storage growth stock.",
     dataSymbol: "TSLA",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("TSLA"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
   },
   {
     symbol: "GOOG",
     name: "Alphabet Inc.",
     label: "GOOG - Alphabet Inc.",
-    description: "alphabet class c shares for search, ads, cloud, and ai exposure.",
+    description: "alphabet class c stock for search, ads, cloud, and ai exposure.",
     dataSymbol: "GOOG",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("GOOG"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
+    searchAliases: ["GOOGL"],
   },
   {
     symbol: "AAPL",
@@ -119,8 +264,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "AAPL - Apple Inc.",
     description: "consumer hardware, services, and platform ecosystem leader.",
     dataSymbol: "AAPL",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("AAPL"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
   },
   {
     symbol: "META",
@@ -128,8 +275,10 @@ const STARTER_ASSETS: Asset[] = [
     label: "META - Meta Platforms Inc.",
     description: "social platforms, advertising, ai, and metaverse exposure.",
     dataSymbol: "META",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("META"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
   },
   {
     symbol: "AMZN",
@@ -137,14 +286,97 @@ const STARTER_ASSETS: Asset[] = [
     label: "AMZN - Amazon.com Inc.",
     description: "e-commerce, aws cloud, advertising, and logistics exposure.",
     dataSymbol: "AMZN",
-    dataset: EQUITY_DATASET,
+    dataset: NASDAQ_HISTORY_DATASET,
+    datasetCandidates: longHistoryDatasets("AMZN"),
     schema: DAILY_SCHEMA,
+    kind: "stock",
   },
+]
+
+const TOP_CRYPTO_ASSETS: Asset[] = [
+  cryptoAsset({
+    symbol: "BTC",
+    name: "Bitcoin",
+    coinGeckoId: "bitcoin",
+    coinMetricsId: "btc",
+    marketCapRank: 1,
+    searchAliases: ["bitcoin"],
+  }),
+  cryptoAsset({
+    symbol: "ETH",
+    name: "Ethereum",
+    coinGeckoId: "ethereum",
+    coinMetricsId: "eth",
+    marketCapRank: 2,
+    searchAliases: ["ether", "ethereum"],
+  }),
+  cryptoAsset({
+    symbol: "USDT",
+    name: "Tether",
+    coinGeckoId: "tether",
+    coinMetricsId: "usdt",
+    marketCapRank: 3,
+    searchAliases: ["tether"],
+  }),
+  cryptoAsset({
+    symbol: "XRP",
+    name: "XRP",
+    coinGeckoId: "ripple",
+    coinMetricsId: "xrp",
+    marketCapRank: 4,
+    searchAliases: ["ripple"],
+  }),
+  cryptoAsset({
+    symbol: "BNB",
+    name: "BNB",
+    coinGeckoId: "binancecoin",
+    coinMetricsId: "bnb",
+    marketCapRank: 5,
+    searchAliases: ["binance coin", "bnb"],
+  }),
+  cryptoAsset({
+    symbol: "USDC",
+    name: "USDC",
+    coinGeckoId: "usd-coin",
+    coinMetricsId: "usdc",
+    marketCapRank: 6,
+    searchAliases: ["usd coin"],
+  }),
+  cryptoAsset({
+    symbol: "SOL",
+    name: "Solana",
+    coinGeckoId: "solana",
+    marketCapRank: 7,
+    searchAliases: ["solana"],
+  }),
+  cryptoAsset({
+    symbol: "TRX",
+    name: "TRON",
+    coinGeckoId: "tron",
+    coinMetricsId: "trx",
+    marketCapRank: 8,
+    searchAliases: ["tron"],
+  }),
+  cryptoAsset({
+    symbol: "FIGR_HELOC",
+    name: "Figure Heloc",
+    coinGeckoId: "figure-heloc",
+    marketCapRank: 9,
+    searchAliases: ["figure heloc", "figure"],
+  }),
+  cryptoAsset({
+    symbol: "DOGE",
+    name: "Dogecoin",
+    coinGeckoId: "dogecoin",
+    coinMetricsId: "doge",
+    marketCapRank: 10,
+    searchAliases: ["doge", "dogecoin"],
+  }),
 ]
 
 const TOP_MARKET_CAP_ASSETS: Asset[] = [
   stockAsset("NVDA", "NVIDIA Corporation", 1),
-  stockAsset("GOOGL", "Alphabet Inc.", 2),
+  stockAsset("GOOG", "Alphabet Inc.", 2, ["GOOGL"]),
   stockAsset("AAPL", "Apple Inc.", 3),
   stockAsset("MSFT", "Microsoft Corporation", 4),
   stockAsset("AMZN", "Amazon.com, Inc.", 5),
@@ -245,7 +477,16 @@ const TOP_MARKET_CAP_ASSETS: Asset[] = [
   stockAsset("MRVL", "Marvell Technology, Inc.", 100),
 ]
 
-const starterDataSymbols = new Set(STARTER_ASSETS.map((asset) => asset.dataSymbol))
+const WATCHLIST_ASSETS: Asset[] = [
+  watchlistStockAsset("HOOD", "Robinhood Markets, Inc.", ["robinhood"]),
+  watchlistStockAsset("MO", "Altria Group, Inc.", ["altria"]),
+  watchlistStockAsset("FCX", "Freeport-McMoRan Inc.", ["freeport", "freeport mcmoran"]),
+  watchlistStockAsset("COIN", "Coinbase Global, Inc.", ["coinbase"]),
+  watchlistStockAsset("CRWD", "CrowdStrike Holdings, Inc.", ["crowdstrike"]),
+  watchlistStockAsset("CRWV", "CoreWeave, Inc.", ["coreweave"]),
+]
+
+const featuredDataSymbols = new Set([...STARTER_ASSETS, ...TOP_CRYPTO_ASSETS, ...WATCHLIST_ASSETS].map((asset) => asset.dataSymbol))
 const topAssetsByDataSymbol = new Map(TOP_MARKET_CAP_ASSETS.map((asset) => [asset.dataSymbol, asset]))
 
 export const ASSETS: Asset[] = [
@@ -253,7 +494,9 @@ export const ASSETS: Asset[] = [
     ...asset,
     marketCapRank: topAssetsByDataSymbol.get(asset.dataSymbol)?.marketCapRank,
   })),
-  ...TOP_MARKET_CAP_ASSETS.filter((asset) => !starterDataSymbols.has(asset.dataSymbol)),
+  ...TOP_CRYPTO_ASSETS,
+  ...WATCHLIST_ASSETS,
+  ...TOP_MARKET_CAP_ASSETS.filter((asset) => !featuredDataSymbols.has(asset.dataSymbol)),
 ]
 
 export const FREQUENCIES: Array<{
