@@ -112,15 +112,24 @@ export function calculateDca({
   salary,
   investmentPercent,
   frequency,
+  leverage = 1,
+  maintenanceMarginPercent = 25,
 }: {
   candles: Candle[]
   salary: number
   investmentPercent: number
   frequency: Frequency
+  leverage?: number
+  maintenanceMarginPercent?: number
 }): DcaSummary {
+  const normalizedLeverage = Math.max(1, leverage)
+  const maintenanceMarginRate = Math.max(0, maintenanceMarginPercent) / 100
+
   if (candles.length === 0) {
     return {
       totalInvested: 0,
+      grossExposure: 0,
+      marginDebt: 0,
       currentValue: 0,
       netReturnPct: 0,
       netReturnDollars: 0,
@@ -141,6 +150,12 @@ export function calculateDca({
       fullMoveDollars: 0,
       moveCapturePct: null,
       amountPerPurchase: 0,
+      grossAmountPerPurchase: 0,
+      borrowedAmountPerPurchase: 0,
+      leverage: normalizedLeverage,
+      isLiquidated: false,
+      liquidationDate: null,
+      liquidationPrice: null,
       purchases: [],
       portfolio: [],
     }
@@ -149,6 +164,8 @@ export function calculateDca({
   const sortedCandles = [...candles].sort((a, b) => a.time.localeCompare(b.time))
   const annualInvestment = salary * (investmentPercent / 100)
   const amountPerPurchase = annualInvestment / getFrequency(frequency).periodsPerYear
+  const grossAmountPerPurchase = amountPerPurchase * normalizedLeverage
+  const borrowedAmountPerPurchase = grossAmountPerPurchase - amountPerPurchase
   const firstDate = parseDate(sortedCandles[0].time)
   const lastDate = parseDate(sortedCandles.at(-1)?.time ?? sortedCandles[0].time)
   const purchases: Purchase[] = []
@@ -165,7 +182,7 @@ export function calculateDca({
       purchases.push({
         time: candle.time,
         price: candle.close,
-        shares: amountPerPurchase / candle.close,
+        shares: grossAmountPerPurchase / candle.close,
         amount: amountPerPurchase,
       })
       candleIndex += 1
@@ -183,6 +200,10 @@ export function calculateDca({
 
   let shares = 0
   let invested = 0
+  let grossExposure = 0
+  let marginDebt = 0
+  let liquidationDate: string | null = null
+  let liquidationPrice: number | null = null
   const portfolio: PortfolioPoint[] = []
 
   for (const candle of sortedCandles) {
@@ -190,11 +211,27 @@ export function calculateDca({
     for (const purchase of todaysPurchases) {
       shares += purchase.shares
       invested += purchase.amount
+      grossExposure += purchase.amount * normalizedLeverage
+      marginDebt += purchase.amount * (normalizedLeverage - 1)
+    }
+
+    const grossValue = shares * candle.close
+    const equityValue = grossValue - marginDebt
+    const maintenanceRequirement = grossValue * maintenanceMarginRate
+
+    if (
+      liquidationDate === null &&
+      marginDebt > 0 &&
+      grossValue > 0 &&
+      equityValue + 0.0001 < maintenanceRequirement
+    ) {
+      liquidationDate = candle.time
+      liquidationPrice = candle.close
     }
 
     portfolio.push({
       time: candle.time,
-      value: shares * candle.close,
+      value: equityValue,
       invested,
     })
   }
@@ -203,11 +240,11 @@ export function calculateDca({
   const firstPrice = sortedCandles[0].close
   const assetMoveDollars = latestPrice - firstPrice
   const assetReturnPct = firstPrice > 0 ? (assetMoveDollars / firstPrice) * 100 : 0
-  const currentValue = shares * latestPrice
+  const currentValue = shares * latestPrice - marginDebt
   const totalInvested = purchases.reduce((total, purchase) => total + purchase.amount, 0)
   const netReturnDollars = currentValue - totalInvested
   const netReturnPct = totalInvested > 0 ? (netReturnDollars / totalInvested) * 100 : 0
-  const averageBuyPrice = shares > 0 ? totalInvested / shares : 0
+  const averageBuyPrice = shares > 0 ? grossExposure / shares : 0
   const years = daysBetween(sortedCandles[0].time, sortedCandles.at(-1)?.time ?? sortedCandles[0].time) / 365
   const annualizedReturn = xirr([
     ...purchases.map((purchase) => ({ time: purchase.time, amount: -purchase.amount })),
@@ -223,6 +260,8 @@ export function calculateDca({
 
   return {
     totalInvested,
+    grossExposure,
+    marginDebt,
     currentValue,
     netReturnPct,
     netReturnDollars,
@@ -243,6 +282,12 @@ export function calculateDca({
     fullMoveDollars,
     moveCapturePct,
     amountPerPurchase,
+    grossAmountPerPurchase,
+    borrowedAmountPerPurchase,
+    leverage: normalizedLeverage,
+    isLiquidated: liquidationDate !== null,
+    liquidationDate,
+    liquidationPrice,
     purchases,
     portfolio,
   }

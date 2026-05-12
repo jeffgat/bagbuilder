@@ -73,6 +73,8 @@ export type MarketDataResponse = {
 
 export type DcaSummary = {
   totalInvested: number
+  grossExposure: number
+  marginDebt: number
   currentValue: number
   netReturnPct: number
   netReturnDollars: number
@@ -93,6 +95,12 @@ export type DcaSummary = {
   fullMoveDollars: number
   moveCapturePct: number | null
   amountPerPurchase: number
+  grossAmountPerPurchase: number
+  borrowedAmountPerPurchase: number
+  leverage: number
+  isLiquidated: boolean
+  liquidationDate: string | null
+  liquidationPrice: number | null
   purchases: Purchase[]
   portfolio: PortfolioPoint[]
 }

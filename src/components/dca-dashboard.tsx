@@ -20,6 +20,7 @@ import {
   TrendingDownIcon,
   TrendingUpIcon,
   WalletCardsIcon,
+  XIcon,
 } from "lucide-react"
 
 import { ASSETS, FREQUENCIES, getAsset, getFrequency } from "@/lib/assets"
@@ -62,8 +63,21 @@ const MIN_MONTHS = 12
 const MAX_MONTHS = 240
 const MONTH_STEP = 1.2
 const DEFAULT_SYMBOL: AssetSymbol = "SPY"
+const DEFAULT_COMPARISON_SYMBOLS: AssetSymbol[] = ["SPY", "NASDAQ", "GOLD"]
+const MAX_COMPARISON_ASSETS = 5
+const COMPARISON_COLORS = ["#f8c159", "#35d6e6", "#72f25f", "#ff554f", "#f472b6"] as const
+const DEFAULT_MARGIN_LEVERAGE = 2
+const MIN_MARGIN_LEVERAGE = 1
+const MAX_MARGIN_LEVERAGE = 10
+const MARGIN_LEVERAGE_STEP = 0.1
+const MAINTENANCE_MARGIN_PERCENT = 25
+const BUILDER_MODES = [
+  { value: "single-asset", label: "single asset" },
+  { value: "multi-asset", label: "multi-asset" },
+] as const
 
 type Asset = (typeof ASSETS)[number]
+type BuilderMode = (typeof BUILDER_MODES)[number]["value"]
 
 function formatCurrency(value: number) {
   return currencyFormatter.format(value)
@@ -102,6 +116,10 @@ function formatYearLabel(months: number) {
   const years = months / 12
 
   return Number.isInteger(years) ? `${years}y` : `${years.toFixed(1)}y`
+}
+
+function formatLeverage(value: number) {
+  return `${roundToTenth(value).toFixed(1)}x`
 }
 
 function scaledMetricValueClass(value: string) {
@@ -162,6 +180,51 @@ function tileTone(value: number) {
 
 function getSliderValue(value: number | readonly number[], fallback: number) {
   return Array.isArray(value) ? value[0] ?? fallback : value
+}
+
+function getSafeMarginLeverage({
+  candles,
+  salary,
+  investmentPercent,
+  frequency,
+}: {
+  candles: MarketDataResponse["candles"]
+  salary: number
+  investmentPercent: number
+  frequency: Frequency
+}) {
+  if (candles.length === 0) {
+    return MIN_MARGIN_LEVERAGE
+  }
+
+  const testLeverage = (leverage: number) =>
+    calculateDca({
+      candles,
+      salary,
+      investmentPercent,
+      frequency,
+      leverage,
+      maintenanceMarginPercent: MAINTENANCE_MARGIN_PERCENT,
+    }).isLiquidated
+
+  if (!testLeverage(MAX_MARGIN_LEVERAGE)) {
+    return MAX_MARGIN_LEVERAGE
+  }
+
+  let low = MIN_MARGIN_LEVERAGE
+  let high = MAX_MARGIN_LEVERAGE
+
+  for (let index = 0; index < 24; index += 1) {
+    const mid = (low + high) / 2
+
+    if (testLeverage(mid)) {
+      high = mid
+    } else {
+      low = mid
+    }
+  }
+
+  return Math.floor(Math.max(MIN_MARGIN_LEVERAGE, low) * 10) / 10
 }
 
 function normalizeAssetSearch(value: string) {
@@ -422,7 +485,15 @@ function LoadingChart() {
   )
 }
 
-function ChartLegend({ assetSymbol, assetLabel }: { assetSymbol: string; assetLabel: string }) {
+function ChartLegend({
+  assetSymbol,
+  assetLabel,
+  isMarginModeEnabled,
+}: {
+  assetSymbol: string
+  assetLabel: string
+  isMarginModeEnabled: boolean
+}) {
   return (
     <div
       aria-label="chart legend"
@@ -444,10 +515,24 @@ function ChartLegend({ assetSymbol, assetLabel }: { assetSymbol: string; assetLa
       <div className="flex items-center gap-2">
         <span
           aria-hidden="true"
-          className="h-0.5 w-10 shrink-0 rounded-full bg-gold-400 shadow-[0_0_10px_rgba(248,193,89,0.35)]"
+          className={cn(
+            "h-0.5 w-10 shrink-0 rounded-full",
+            isMarginModeEnabled
+              ? "bg-loss shadow-[0_0_10px_rgba(255,85,79,0.35)]"
+              : "bg-gold-400 shadow-[0_0_10px_rgba(248,193,89,0.35)]"
+          )}
         />
         <span className="font-medium text-foreground">net return</span>
       </div>
+      {isMarginModeEnabled ? (
+        <div className="flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className="h-0.5 w-10 shrink-0 rounded-full bg-gold-400 shadow-[0_0_10px_rgba(248,193,89,0.35)]"
+          />
+          <span className="font-medium text-foreground">base net return</span>
+        </div>
+      ) : null}
       <div className="flex items-center gap-2">
         <ArrowDownIcon aria-hidden="true" className="size-4 text-profit" />
         <span>dca buys</span>
@@ -698,6 +783,74 @@ function SelectedAssetCard({
   )
 }
 
+function ComparisonAssetBadges({
+  assets,
+  className,
+  onRemove,
+  onSelect,
+  selectedSymbol,
+}: {
+  assets: Array<{
+    color: string
+    dataSymbol: string
+    isLoading: boolean
+    name: string
+    symbol: AssetSymbol
+  }>
+  className?: string
+  onRemove: (symbol: AssetSymbol) => void
+  onSelect: (symbol: AssetSymbol) => void
+  selectedSymbol: AssetSymbol
+}) {
+  return (
+    <div className={cn("flex flex-wrap gap-2", className)}>
+      {assets.map((asset) => {
+        const isSelected = asset.symbol === selectedSymbol
+
+        return (
+          <div
+            key={asset.symbol}
+            className={cn(
+              "group flex min-h-9 max-w-full items-center overflow-hidden rounded-md border font-mono text-xs transition-colors",
+              isSelected ? "bg-bg-card-hover text-foreground shadow-[0_0_18px_rgba(114,242,95,0.12)]" : "bg-bg-primary/65 text-text-secondary hover:bg-bg-card-hover hover:text-foreground"
+            )}
+            style={{
+              borderColor: isSelected ? asset.color : `${asset.color}66`,
+              boxShadow: isSelected ? `inset 3px 0 0 ${asset.color}` : undefined,
+            }}
+          >
+            <button
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => onSelect(asset.symbol)}
+              className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-profit/40"
+            >
+              <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: asset.color }} />
+              <span className="min-w-0">
+                <span className="block leading-none">{asset.dataSymbol}</span>
+                <span className="mt-1 block max-w-36 truncate text-[0.65rem] text-muted-foreground" title={asset.name}>
+                  {isSelected ? "selected" : asset.isLoading ? "loading" : asset.name}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={`remove ${asset.dataSymbol}`}
+              className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-loss/15 hover:text-loss focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-loss/30"
+              onClick={(event) => {
+                event.stopPropagation()
+                onRemove(asset.symbol)
+              }}
+            >
+              <XIcon aria-hidden="true" className="size-3.5" />
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function StatusLine({
   isError,
   sourceLabel,
@@ -726,12 +879,54 @@ export function DcaDashboard() {
   const [frequency, setFrequency] = useState<Frequency>(DEFAULT_FREQUENCY)
   const [months, setMonths] = useState(DEFAULT_MONTHS)
   const [symbol, setSymbol] = useState<AssetSymbol>(DEFAULT_SYMBOL)
+  const [builderMode, setBuilderMode] = useState<BuilderMode>("single-asset")
+  const [isMarginModeEnabled, setIsMarginModeEnabled] = useState(false)
+  const [marginLeverage, setMarginLeverage] = useState(DEFAULT_MARGIN_LEVERAGE)
+  const [comparisonSymbols, setComparisonSymbols] = useState<AssetSymbol[]>(DEFAULT_COMPARISON_SYMBOLS)
+  const [selectedComparisonSymbol, setSelectedComparisonSymbol] = useState<AssetSymbol>(DEFAULT_COMPARISON_SYMBOLS[0])
+  const [comparisonMarketData, setComparisonMarketData] = useState<Record<AssetSymbol, MarketDataResponse>>({})
+  const [comparisonErrors, setComparisonErrors] = useState<Record<AssetSymbol, string>>({})
+  const [isComparisonLoading, setIsComparisonLoading] = useState(false)
   const [marketData, setMarketData] = useState<MarketDataResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isRecalculating, setIsRecalculating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const startRecalculation = () => setIsRecalculating(true)
+
+  function addComparisonAsset(nextSymbol: AssetSymbol) {
+    startRecalculation()
+    setSelectedComparisonSymbol(nextSymbol)
+    setComparisonSymbols((currentSymbols) => {
+      if (currentSymbols.includes(nextSymbol)) {
+        return currentSymbols
+      }
+
+      if (currentSymbols.length >= MAX_COMPARISON_ASSETS) {
+        return currentSymbols
+      }
+
+      return [...currentSymbols, nextSymbol]
+    })
+  }
+
+  function removeComparisonAsset(nextSymbol: AssetSymbol) {
+    startRecalculation()
+    setComparisonSymbols((currentSymbols) => {
+      const nextSymbols = currentSymbols.filter((item) => item !== nextSymbol)
+
+      if (selectedComparisonSymbol === nextSymbol) {
+        setSelectedComparisonSymbol(nextSymbols[0] ?? DEFAULT_SYMBOL)
+      }
+
+      return nextSymbols
+    })
+  }
+
+  function selectComparisonAsset(nextSymbol: AssetSymbol) {
+    startRecalculation()
+    setSelectedComparisonSymbol(nextSymbol)
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -783,6 +978,60 @@ export function DcaDashboard() {
   }, [months, symbol])
 
   useEffect(() => {
+    if (builderMode !== "multi-asset" || comparisonSymbols.length === 0) {
+      return
+    }
+
+    const controller = new AbortController()
+
+    async function loadComparisonMarketData() {
+      setIsComparisonLoading(true)
+
+      const nextMarketData: Record<AssetSymbol, MarketDataResponse> = {}
+      const nextErrors: Record<AssetSymbol, string> = {}
+
+      await Promise.all(
+        comparisonSymbols.map(async (comparisonSymbol) => {
+          try {
+            const params = new URLSearchParams({ symbol: comparisonSymbol, months: String(months) })
+            const response = await fetch(`/api/market-data?${params.toString()}`, {
+              signal: controller.signal,
+            })
+            const payload = (await response.json()) as MarketDataResponse | { error?: string }
+
+            if (!response.ok) {
+              throw new Error("error" in payload ? payload.error : "unable to load market data.")
+            }
+
+            nextMarketData[comparisonSymbol] = payload as MarketDataResponse
+          } catch (caughtError) {
+            if (controller.signal.aborted) {
+              return
+            }
+
+            nextErrors[comparisonSymbol] = caughtError instanceof Error ? caughtError.message : "unable to load market data."
+          }
+        })
+      )
+
+      if (controller.signal.aborted) {
+        return
+      }
+
+      setComparisonMarketData((currentMarketData) => ({
+        ...currentMarketData,
+        ...nextMarketData,
+      }))
+      setComparisonErrors(nextErrors)
+      setIsComparisonLoading(false)
+    }
+
+    void loadComparisonMarketData()
+
+    return () => controller.abort()
+  }, [builderMode, comparisonSymbols, months])
+
+  useEffect(() => {
     if (!isRecalculating) {
       return
     }
@@ -790,25 +1039,97 @@ export function DcaDashboard() {
     const timeout = window.setTimeout(() => setIsRecalculating(false), 280)
 
     return () => window.clearTimeout(timeout)
-  }, [frequency, investmentPercent, isRecalculating, months, salary, symbol])
+  }, [
+    frequency,
+    investmentPercent,
+    isMarginModeEnabled,
+    isRecalculating,
+    marginLeverage,
+    months,
+    salary,
+    symbol,
+    selectedComparisonSymbol,
+  ])
 
-  const selectedAsset = getAsset(symbol)
-  const selectedMarketData = marketData?.dataSymbol === selectedAsset.dataSymbol ? marketData : null
+  const singleSelectedAsset = getAsset(symbol)
+  const singleSelectedMarketData = marketData?.dataSymbol === singleSelectedAsset.dataSymbol ? marketData : null
+  const comparisonResults = useMemo(
+    () =>
+      comparisonSymbols.map((comparisonSymbol, index) => {
+        const asset = getAsset(comparisonSymbol)
+        const data = comparisonMarketData[comparisonSymbol]
+        const selectedData = data?.dataSymbol === asset.dataSymbol ? data : null
 
-  const summary = useMemo(
+        return {
+          asset,
+          color: COMPARISON_COLORS[index % COMPARISON_COLORS.length],
+          error: comparisonErrors[comparisonSymbol] ?? null,
+          isLoading: isComparisonLoading && !selectedData,
+          marketData: selectedData,
+          summary: calculateDca({
+            candles: selectedData?.candles ?? [],
+            salary,
+            investmentPercent,
+            frequency,
+          }),
+          symbol: comparisonSymbol,
+        }
+      }),
+    [comparisonErrors, comparisonMarketData, comparisonSymbols, frequency, investmentPercent, isComparisonLoading, salary]
+  )
+  const selectedComparisonResult = comparisonResults.find((result) => result.symbol === selectedComparisonSymbol) ?? comparisonResults[0]
+  const selectedComparisonAsset = selectedComparisonResult?.asset ?? getAsset(selectedComparisonSymbol)
+  const selectedComparisonMarketData = selectedComparisonResult?.marketData ?? null
+  const activeLeverage = isMarginModeEnabled ? marginLeverage : MIN_MARGIN_LEVERAGE
+  const singleSummary = useMemo(
     () =>
       calculateDca({
-        candles: selectedMarketData?.candles ?? [],
+        candles: singleSelectedMarketData?.candles ?? [],
+        salary,
+        investmentPercent,
+        frequency,
+        leverage: activeLeverage,
+        maintenanceMarginPercent: MAINTENANCE_MARGIN_PERCENT,
+      }),
+    [activeLeverage, frequency, investmentPercent, singleSelectedMarketData?.candles, salary]
+  )
+  const baseSingleSummary = useMemo(
+    () =>
+      calculateDca({
+        candles: singleSelectedMarketData?.candles ?? [],
         salary,
         investmentPercent,
         frequency,
       }),
-    [frequency, investmentPercent, selectedMarketData?.candles, salary]
+    [frequency, investmentPercent, singleSelectedMarketData?.candles, salary]
   )
+  const safeMarginLeverage = useMemo(
+    () =>
+      getSafeMarginLeverage({
+        candles: singleSelectedMarketData?.candles ?? [],
+        salary,
+        investmentPercent,
+        frequency,
+      }),
+    [frequency, investmentPercent, singleSelectedMarketData?.candles, salary]
+  )
+  const selectedAsset = builderMode === "multi-asset" ? selectedComparisonAsset : singleSelectedAsset
+  const selectedMarketData = builderMode === "multi-asset" ? selectedComparisonMarketData : singleSelectedMarketData
+  const summary =
+    builderMode === "multi-asset"
+      ? selectedComparisonResult?.summary ??
+        calculateDca({
+          candles: [],
+          salary,
+          investmentPercent,
+          frequency,
+        })
+      : singleSummary
 
   const selectedFrequency = getFrequency(frequency)
   const annualInvestment = salary * (investmentPercent / 100)
   const salaryInputValue = formatInteger(salary)
+  const activeError = builderMode === "multi-asset" ? selectedComparisonResult?.error ?? null : error
   const sourceLabel =
     selectedMarketData?.source === "databento"
       ? "databento"
@@ -819,7 +1140,26 @@ export function DcaDashboard() {
       : "demo data"
   const chartAssetSymbol = selectedMarketData?.dataSymbol ?? selectedAsset.dataSymbol
   const chartAssetLabel = selectedMarketData?.name ?? selectedAsset.name
-  const isValueLoading = isLoading || isRecalculating
+  const comparisonChartAssets = comparisonResults
+    .filter((result) => result.marketData?.candles.length)
+    .map((result) => ({
+      id: result.symbol,
+      label: result.marketData?.dataSymbol ?? result.asset.dataSymbol,
+      name: result.marketData?.name ?? result.asset.name,
+      color: result.color,
+      candles: result.marketData?.candles ?? [],
+      portfolio: result.summary.portfolio,
+      purchases: result.summary.purchases,
+      isSelected: result.symbol === selectedComparisonSymbol,
+    }))
+  const comparisonBadgeAssets = comparisonResults.map((result) => ({
+    color: result.color,
+    dataSymbol: result.marketData?.dataSymbol ?? result.asset.dataSymbol,
+    isLoading: result.isLoading,
+    name: result.marketData?.name ?? result.asset.name,
+    symbol: result.symbol,
+  }))
+  const isValueLoading = builderMode === "multi-asset" ? Boolean(selectedComparisonResult?.isLoading) : isLoading
   const dataRange = selectedMarketData?.range
   const availableMonths = selectedMarketData?.availability?.months ?? MAX_MONTHS
   const limitedMonths = dataRange?.isLimited && dataRange.actualMonths > 0 ? dataRange.actualMonths : null
@@ -827,16 +1167,36 @@ export function DcaDashboard() {
   const selectedMonths = roundToTenth(Math.min(months, maxSelectableMonths))
   const effectiveMonths = dataRange?.actualMonths && dataRange.actualMonths > 0 ? dataRange.actualMonths : months
   const timePeriodLabel = dataRange?.isLimited ? `${formatYears(effectiveMonths)} years available` : `${formatYears(months)} years`
+  const isMarginLiquidated = isMarginModeEnabled && builderMode === "single-asset" && summary.isLiquidated
+  const chartPortfolio =
+    isMarginLiquidated && summary.liquidationDate
+      ? summary.portfolio.filter((point) => point.time <= summary.liquidationDate!)
+      : summary.portfolio
+  const chartPurchases =
+    isMarginLiquidated && summary.liquidationDate
+      ? summary.purchases.filter((purchase) => purchase.time <= summary.liquidationDate!)
+      : summary.purchases
+  const baseChartPortfolio = isMarginModeEnabled && builderMode === "single-asset" ? baseSingleSummary.portfolio : []
+  const liquidationDetail =
+    summary.liquidationDate && summary.liquidationPrice
+      ? `hit ${summary.liquidationDate} near ${formatCurrency(summary.liquidationPrice)}`
+      : "maintenance breach in range"
+  const marginSafetyLabel =
+    safeMarginLeverage >= MAX_MARGIN_LEVERAGE
+      ? `${formatLeverage(MAX_MARGIN_LEVERAGE)} stayed above maintenance`
+      : `liquidation starts above about ${formatLeverage(safeMarginLeverage)}`
   const totalInvestedValueClass = scaledMetricValueClass(formatCurrency(summary.totalInvested))
-  const currentValueClass = scaledMetricValueClass(formatCurrency(summary.currentValue))
-  const netReturnValueClass = scaledMetricValueClass(formatPercent(summary.netReturnPct, true))
-  const maxDrawdownValueClass = scaledMetricValueClass(formatPercent(summary.maxDrawdownPct))
+  const currentValueClass = scaledMetricValueClass(isMarginLiquidated ? "liquidated" : formatCurrency(summary.currentValue))
+  const netReturnValueClass = scaledMetricValueClass(isMarginLiquidated ? "liquidated" : formatPercent(summary.netReturnPct, true))
+  const maxDrawdownValueClass = scaledMetricValueClass(isMarginLiquidated ? "liquidated" : formatPercent(summary.maxDrawdownPct))
   const averageBuyPriceValueClass = scaledMetricValueClass(formatCurrency(summary.averageBuyPrice))
   const assetMoveValueClass = scaledFeatureValueClass(formatPercent(summary.assetReturnPct, true))
   const returnCaptureValueClass = scaledFeatureValueClass(
-    summary.moveCapturePct === null ? "n/a" : formatPercent(summary.moveCapturePct)
+    isMarginLiquidated ? "liquidated" : summary.moveCapturePct === null ? "n/a" : formatPercent(summary.moveCapturePct)
   )
-  const dollarsCapturedValueClass = scaledFeatureValueClass(formatSignedCurrency(summary.netReturnDollars))
+  const dollarsCapturedValueClass = scaledFeatureValueClass(
+    isMarginLiquidated ? "liquidated" : formatSignedCurrency(summary.netReturnDollars)
+  )
   const timeScaleLabels =
     maxSelectableMonths <= MIN_MONTHS
       ? [{ label: "1y", value: MIN_MONTHS }]
@@ -844,6 +1204,8 @@ export function DcaDashboard() {
           { label: "1y", value: MIN_MONTHS },
           { label: formatYearLabel(maxSelectableMonths), value: maxSelectableMonths },
         ]
+  const activePanelId = `${builderMode}-builder-panel`
+
   return (
     <main className="min-h-svh p-3 sm:p-4 lg:p-5">
       <div className="console-frame relative mx-auto flex min-h-[calc(100svh-1.5rem)] max-w-[1540px] flex-col overflow-hidden rounded-lg border border-border">
@@ -863,7 +1225,49 @@ export function DcaDashboard() {
           </div>
         </header>
 
-        <div className="relative z-10 grid flex-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <nav className="relative z-10 border-b border-border bg-bg-secondary/60 px-3 py-2 sm:px-5" aria-label="builder mode">
+          <div role="tablist" className="flex max-w-full gap-1 overflow-x-auto rounded-lg border border-border bg-bg-primary/70 p-1">
+            {BUILDER_MODES.map((mode) => {
+              const isSelected = builderMode === mode.value
+
+              return (
+                <button
+                  key={mode.value}
+                  type="button"
+                  role="tab"
+                  id={`${mode.value}-builder-tab`}
+                  aria-selected={isSelected}
+                  aria-controls={`${mode.value}-builder-panel`}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) {
+                      return
+                    }
+
+                    setBuilderMode(mode.value)
+                  }}
+                  onFocus={() => setBuilderMode(mode.value)}
+                  onClick={() => setBuilderMode(mode.value)}
+                  className={cn(
+                    "min-h-10 shrink-0 rounded-md px-4 font-mono text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-profit/40 sm:text-sm",
+                    isSelected
+                      ? "bg-profit text-bg-primary shadow-[0_0_18px_rgba(114,242,95,0.18)]"
+                      : "text-text-secondary hover:bg-bg-card-hover hover:text-foreground"
+                  )}
+                >
+                  {mode.label}
+                </button>
+              )
+            })}
+          </div>
+        </nav>
+
+        <div
+          id={activePanelId}
+          role="tabpanel"
+          aria-labelledby={`${builderMode}-builder-tab`}
+          className="relative z-10 grid flex-1 lg:grid-cols-[380px_minmax(0,1fr)]"
+        >
+          <>
           <aside className="flex flex-col border-b border-border bg-bg-secondary/70 lg:border-b-0 lg:border-r">
             <div className="flex flex-1 flex-col gap-8 p-5">
               <RailHeading title="investment parameters" description="configure your dca" icon={SlidersHorizontalIcon} />
@@ -947,6 +1351,61 @@ export function DcaDashboard() {
                   />
                   <ScaleLabels min={MIN_MONTHS} max={maxSelectableMonths} labels={timeScaleLabels} />
                   <FieldDescription className="font-mono text-xs">{formatDataRange(dataRange, months)}</FieldDescription>
+                  {builderMode === "single-asset" ? (
+                    <>
+                      <label
+                        htmlFor="margin-mode"
+                        className="mt-3 flex min-h-10 items-center gap-3 rounded-lg border border-loss/35 bg-loss-dim/10 px-3 font-mono text-sm font-semibold text-loss transition-colors hover:bg-loss-dim/15"
+                      >
+                        <input
+                          id="margin-mode"
+                          type="checkbox"
+                          checked={isMarginModeEnabled}
+                          onChange={(event) => {
+                            startRecalculation()
+                            setIsMarginModeEnabled(event.target.checked)
+                          }}
+                          className="size-4 rounded border-loss accent-loss"
+                        />
+                        <AlertTriangleIcon aria-hidden="true" className="size-4" />
+                        <span>margin mode?</span>
+                      </label>
+                      {isMarginModeEnabled ? (
+                        <div className="mt-3 rounded-lg border border-loss/30 bg-loss-dim/10 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <FieldTitle className="font-mono text-sm text-loss">
+                              <AlertTriangleIcon className="size-4 text-loss" />
+                              leverage
+                            </FieldTitle>
+                            <span className="font-mono text-sm text-loss">{formatLeverage(marginLeverage)}</span>
+                          </div>
+                          <Slider
+                            min={MIN_MARGIN_LEVERAGE}
+                            max={MAX_MARGIN_LEVERAGE}
+                            step={MARGIN_LEVERAGE_STEP}
+                            value={[marginLeverage]}
+                            onValueChange={(value) => {
+                              startRecalculation()
+                              setMarginLeverage(roundToTenth(getSliderValue(value, DEFAULT_MARGIN_LEVERAGE)))
+                            }}
+                            className="py-3 [&_[data-slot=slider-range]]:bg-loss [&_[data-slot=slider-thumb]]:size-5 [&_[data-slot=slider-thumb]]:border-loss [&_[data-slot=slider-thumb]]:bg-loss [&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-track]]:bg-loss-dim/35"
+                          />
+                          <ScaleLabels
+                            min={MIN_MARGIN_LEVERAGE}
+                            max={MAX_MARGIN_LEVERAGE}
+                            labels={[
+                              { label: "1x", value: MIN_MARGIN_LEVERAGE },
+                              { label: "10x", value: MAX_MARGIN_LEVERAGE },
+                            ]}
+                          />
+                          <FieldDescription className="font-mono text-xs text-loss/80">
+                            exposure: {formatCurrency(summary.grossAmountPerPurchase)} per buy, borrowed:{" "}
+                            {formatCurrency(summary.borrowedAmountPerPurchase)}. {marginSafetyLabel}.
+                          </FieldDescription>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
                 </Field>
 
                 <Field>
@@ -986,24 +1445,58 @@ export function DcaDashboard() {
                   <div className="flex items-center justify-between gap-3">
                     <FieldLabel htmlFor="asset-search" className="items-center font-mono text-sm text-text-secondary">
                       <TrendingUpIcon className="size-4 text-profit" />
-                      asset search
+                      {builderMode === "multi-asset" ? "compare assets" : "asset search"}
                     </FieldLabel>
                     <Badge
                       variant="outline"
                       className="rounded-md border-border bg-secondary/40 font-mono text-text-secondary"
                     >
-                      assets: {ASSETS.length}
+                      {builderMode === "multi-asset" ? `${comparisonSymbols.length}/${MAX_COMPARISON_ASSETS}` : `assets: ${ASSETS.length}`}
                     </Badge>
                   </div>
-                  <AssetSearchCombobox
-                    key={selectedAsset.symbol}
-                    id="asset-search"
-                    selectedAsset={selectedAsset}
-                    onSearchStart={startRecalculation}
-                    onValueChange={setSymbol}
-                  />
-                  <SelectedAssetCard asset={selectedAsset} dataset={selectedMarketData?.dataset} schema={selectedMarketData?.schema} />
-                  <FieldDescription className="font-mono text-xs">{selectedAsset.description}</FieldDescription>
+                  {builderMode === "multi-asset" ? (
+                    <>
+                      <AssetSearchCombobox
+                        key={`comparison-${selectedComparisonSymbol}-${comparisonSymbols.join("-")}`}
+                        id="asset-search"
+                        selectedAsset={selectedComparisonAsset}
+                        onSearchStart={startRecalculation}
+                        onValueChange={addComparisonAsset}
+                      />
+                      <ComparisonAssetBadges
+                        assets={comparisonBadgeAssets}
+                        onRemove={removeComparisonAsset}
+                        onSelect={selectComparisonAsset}
+                        selectedSymbol={selectedComparisonResult?.symbol ?? selectedComparisonSymbol}
+                      />
+                      <SelectedAssetCard
+                        asset={selectedComparisonAsset}
+                        dataset={selectedComparisonMarketData?.dataset}
+                        schema={selectedComparisonMarketData?.schema}
+                      />
+                      <FieldDescription className="font-mono text-xs">
+                        {comparisonSymbols.length >= MAX_COMPARISON_ASSETS
+                          ? "comparison limit reached"
+                          : selectedComparisonAsset.description}
+                      </FieldDescription>
+                    </>
+                  ) : (
+                    <>
+                      <AssetSearchCombobox
+                        key={singleSelectedAsset.symbol}
+                        id="asset-search"
+                        selectedAsset={singleSelectedAsset}
+                        onSearchStart={startRecalculation}
+                        onValueChange={setSymbol}
+                      />
+                      <SelectedAssetCard
+                        asset={singleSelectedAsset}
+                        dataset={singleSelectedMarketData?.dataset}
+                        schema={singleSelectedMarketData?.schema}
+                      />
+                      <FieldDescription className="font-mono text-xs">{singleSelectedAsset.description}</FieldDescription>
+                    </>
+                  )}
                 </Field>
               </FieldGroup>
             </div>
@@ -1017,10 +1510,15 @@ export function DcaDashboard() {
                   label="total invested"
                   value={<CountUpValue value={summary.totalInvested} format={formatCurrency} isPaused={isValueLoading} />}
                   detail={
-                    <>
-                      <CountUpValue value={summary.amountPerPurchase} format={formatCurrency} isPaused={isValueLoading} /> per{" "}
-                      {selectedFrequency.label.toLowerCase()} buy
-                    </>
+                    isMarginModeEnabled && builderMode === "single-asset" ? (
+                      <>
+                        <CountUpValue value={summary.grossAmountPerPurchase} format={formatCurrency} isPaused={isValueLoading} /> per buy
+                      </>
+                    ) : (
+                      <>
+                        <CountUpValue value={summary.amountPerPurchase} format={formatCurrency} isPaused={isValueLoading} /> per buy
+                      </>
+                    )
                   }
                   icon={DollarSignIcon}
                   isLoading={isValueLoading}
@@ -1030,44 +1528,78 @@ export function DcaDashboard() {
                 />
                 <MetricTile
                   label="current value"
-                  value={<CountUpValue value={summary.currentValue} format={formatCurrency} isPaused={isValueLoading} />}
+                  value={
+                    isMarginLiquidated ? (
+                      "liquidated"
+                    ) : (
+                      <CountUpValue value={summary.currentValue} format={formatCurrency} isPaused={isValueLoading} />
+                    )
+                  }
                   detail={
-                    <>
-                      <CountUpValue value={summary.latestPrice} format={formatCurrency} isPaused={isValueLoading} /> per share
-                    </>
+                    isMarginLiquidated ? (
+                      liquidationDetail
+                    ) : (
+                      <>
+                        <CountUpValue value={summary.latestPrice} format={formatCurrency} isPaused={isValueLoading} /> per share
+                      </>
+                    )
                   }
                   icon={BarChart3Icon}
                   isLoading={isValueLoading}
-                  tone="text-profit"
-                  iconTone="border-profit/25 bg-profit/15 text-profit"
+                  tone={isMarginLiquidated ? "text-loss" : "text-profit"}
+                  iconTone={isMarginLiquidated ? "border-loss/25 bg-loss/15 text-loss" : "border-profit/25 bg-profit/15 text-profit"}
                   valueClassName={currentValueClass}
                 />
                 <MetricTile
                   label="net return"
                   value={
-                    <CountUpValue
-                      value={summary.netReturnPct}
-                      format={(value) => formatPercent(value, true)}
-                      isPaused={isValueLoading}
-                    />
+                    isMarginLiquidated ? (
+                      "liquidated"
+                    ) : (
+                      <CountUpValue
+                        value={summary.netReturnPct}
+                        format={(value) => formatPercent(value, true)}
+                        isPaused={isValueLoading}
+                      />
+                    )
                   }
-                  detail={<CountUpValue value={summary.netReturnDollars} format={formatCurrency} isPaused={isValueLoading} />}
+                  detail={
+                    isMarginLiquidated ? (
+                      liquidationDetail
+                    ) : (
+                      <CountUpValue value={summary.netReturnDollars} format={formatCurrency} isPaused={isValueLoading} />
+                    )
+                  }
                   icon={TrendingUpIcon}
                   isLoading={isValueLoading}
-                  tone={tileTone(summary.netReturnPct)}
-                  iconTone={summary.netReturnPct < 0 ? "border-loss/25 bg-loss/15 text-loss" : "border-profit/25 bg-profit/15 text-profit"}
+                  tone={isMarginLiquidated ? "text-loss" : tileTone(summary.netReturnPct)}
+                  iconTone={
+                    isMarginLiquidated || summary.netReturnPct < 0
+                      ? "border-loss/25 bg-loss/15 text-loss"
+                      : "border-profit/25 bg-profit/15 text-profit"
+                  }
                   valueClassName={netReturnValueClass}
                 />
                 <MetricTile
                   label="max drawdown"
                   value={
-                    <CountUpValue
-                      value={summary.maxDrawdownPct}
-                      format={(value) => formatPercent(value)}
-                      isPaused={isValueLoading}
-                    />
+                    isMarginLiquidated ? (
+                      "liquidated"
+                    ) : (
+                      <CountUpValue
+                        value={summary.maxDrawdownPct}
+                        format={(value) => formatPercent(value)}
+                        isPaused={isValueLoading}
+                      />
+                    )
                   }
-                  detail={<CountUpValue value={summary.maxDrawdownDollars} format={formatCurrency} isPaused={isValueLoading} />}
+                  detail={
+                    isMarginLiquidated ? (
+                      liquidationDetail
+                    ) : (
+                      <CountUpValue value={summary.maxDrawdownDollars} format={formatCurrency} isPaused={isValueLoading} />
+                    )
+                  }
                   icon={TrendingDownIcon}
                   isLoading={isValueLoading}
                   tone="text-loss"
@@ -1111,24 +1643,45 @@ export function DcaDashboard() {
                   </Badge>
                 </div>
               </div>
+              {builderMode === "multi-asset" ? (
+                <ComparisonAssetBadges
+                  assets={comparisonBadgeAssets}
+                  className="mt-4"
+                  onRemove={removeComparisonAsset}
+                  onSelect={selectComparisonAsset}
+                  selectedSymbol={selectedComparisonResult?.symbol ?? selectedComparisonSymbol}
+                />
+              ) : null}
 
               <div className="mt-4">
-                {error ? (
+                {activeError && (builderMode !== "multi-asset" || comparisonChartAssets.length === 0) ? (
                   <div className="flex min-h-[340px] items-center justify-center rounded-lg border border-loss/30 bg-loss-dim/15 p-5 text-loss md:min-h-[360px]">
                     <div className="flex max-w-xl items-start gap-3">
                       <AlertTriangleIcon aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
                       <div>
                         <p className="font-medium">market data could not be loaded.</p>
-                        <p className="mt-2 text-sm text-loss/80">{error}</p>
+                        <p className="mt-2 text-sm text-loss/80">{activeError}</p>
                       </div>
                     </div>
                   </div>
-                ) : isLoading ? (
+                ) : isValueLoading && (builderMode !== "multi-asset" || comparisonChartAssets.length === 0) ? (
                   <LoadingChart />
+                ) : builderMode === "multi-asset" && comparisonChartAssets.length ? (
+                  <PerformanceChart comparisonAssets={comparisonChartAssets} />
                 ) : selectedMarketData?.candles.length ? (
                   <>
-                    <ChartLegend assetSymbol={chartAssetSymbol} assetLabel={chartAssetLabel} />
-                    <PerformanceChart candles={selectedMarketData.candles} portfolio={summary.portfolio} purchases={summary.purchases} />
+                    <ChartLegend
+                      assetSymbol={chartAssetSymbol}
+                      assetLabel={chartAssetLabel}
+                      isMarginModeEnabled={isMarginModeEnabled}
+                    />
+                    <PerformanceChart
+                      basePortfolio={baseChartPortfolio}
+                      candles={selectedMarketData.candles}
+                      netReturnColor={isMarginModeEnabled ? "#ff554f" : undefined}
+                      portfolio={chartPortfolio}
+                      purchases={chartPurchases}
+                    />
                   </>
                 ) : (
                   <div className="flex h-[340px] items-center justify-center rounded-lg border border-dashed border-border text-muted-foreground md:h-[360px]">
@@ -1168,10 +1721,16 @@ export function DcaDashboard() {
                         className={cn(
                           "block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none",
                           returnCaptureValueClass,
-                          summary.moveCapturePct === null ? "text-muted-foreground" : tileTone(summary.moveCapturePct)
+                          isMarginLiquidated
+                            ? "text-loss"
+                            : summary.moveCapturePct === null
+                              ? "text-muted-foreground"
+                              : tileTone(summary.moveCapturePct)
                         )}
                       >
-                        {summary.moveCapturePct === null ? (
+                        {isMarginLiquidated ? (
+                          "liquidated"
+                        ) : summary.moveCapturePct === null ? (
                           "n/a"
                         ) : (
                           <CountUpValue
@@ -1183,22 +1742,32 @@ export function DcaDashboard() {
                       </span>
                     </ValueSlot>
                     <span className="font-mono text-xs text-muted-foreground">
-                      from the entire {formatPercent(summary.assetReturnPct)} asset move
+                      {isMarginLiquidated ? liquidationDetail : `from the entire ${formatPercent(summary.assetReturnPct)} asset move`}
                     </span>
                   </div>
                   <div className="flex min-w-0 flex-col gap-2">
                     <span className="font-mono text-xs text-muted-foreground">dollars captured</span>
                     <ValueSlot isLoading={isValueLoading} skeletonClassName="h-7 w-24">
-                      <span className={cn("block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none", dollarsCapturedValueClass, tileTone(summary.netReturnDollars))}>
-                        <CountUpValue
-                          value={summary.netReturnDollars}
-                          format={formatSignedCurrency}
-                          isPaused={isValueLoading}
-                        />
+                      <span
+                        className={cn(
+                          "block max-w-full overflow-hidden whitespace-nowrap font-mono font-semibold leading-none",
+                          dollarsCapturedValueClass,
+                          isMarginLiquidated ? "text-loss" : tileTone(summary.netReturnDollars)
+                        )}
+                      >
+                        {isMarginLiquidated ? (
+                          "liquidated"
+                        ) : (
+                          <CountUpValue
+                            value={summary.netReturnDollars}
+                            format={formatSignedCurrency}
+                            isPaused={isValueLoading}
+                          />
+                        )}
                       </span>
                     </ValueSlot>
                     <span className="font-mono text-xs text-muted-foreground">
-                      of {formatSignedCurrency(summary.fullMoveDollars)} full-period move
+                      {isMarginLiquidated ? liquidationDetail : `of ${formatSignedCurrency(summary.fullMoveDollars)} full-period move`}
                     </span>
                   </div>
                 </div>
@@ -1217,9 +1786,10 @@ export function DcaDashboard() {
               </div>
             </section>
           </section>
+          </>
         </div>
 
-        <StatusLine isError={Boolean(error)} sourceLabel={sourceLabel} />
+        <StatusLine isError={Boolean(activeError)} sourceLabel={sourceLabel} />
       </div>
     </main>
   )
